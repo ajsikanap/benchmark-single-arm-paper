@@ -1,0 +1,296 @@
+---
+title: "Benchmark error in single-arm trials — Paper outputs"
+author: "Ajsi Kanapari"
+date: "`r Sys.Date()`"
+output:
+  word_document:
+    toc: true
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+library(flextable)
+library(here)
+
+# Raw per-iteration results from 04_run_simulation.R:
+#   res_boot_alt, res_boot_null, res_boot_errors, truth_scenarios,
+#   scenario_configs, N_BOOT, N_TRIAL, TAU, RATIO_CONTROLS, N_REGISTRY, ALPHA
+load(here("results/results_raw_100.RData"))
+source(here("functions/load_functions.R"))
+
+group_vars <- c("scenario", "analysis_label", "registry_n", "method")
+N_LEVELS   <- as.character(N_REGISTRY)
+
+# Sign convention (Tables 4, A4, A5 and Figure 1): benchmark errors are shown
+# as their contribution to the bias of the treatment effect, i.e. with the
+# sign flipped (-SE, -ME): positive = treatment effect overestimated.
+
+relabel <- function(df) {
+  df |>
+    mutate(
+      scenario   = factor(recode(scenario, !!!SCENARIO_LABELS),
+                          levels = unname(SCENARIO_LABELS)),
+      registry_n = factor(registry_n, levels = N_LEVELS)
+    )
+}
+```
+
+```{r summaries}
+# Performance measures with Monte Carlo SE.
+# alternative -> bias, RMSE, decomposition, power; null -> type I error.
+table_main_alt  <- summarise_main_results(res_boot_alt,  group_vars = group_vars, alpha = ALPHA)
+table_main_null <- summarise_main_results(res_boot_null, group_vars = group_vars, alpha = ALPHA)
+table_balance   <- summarise_balance_results(res_boot_alt, group_vars = group_vars)
+
+# Rejection rates side by side (no MCSE), used by Figure 2
+get_reject <- function(df, suffix) {
+  df |>
+    select(all_of(group_vars), starts_with("reject_"), -ends_with("_mcse")) |>
+    rename_with(\(x) paste0(x, suffix), starts_with("reject_"))
+}
+
+table_oc <- left_join(
+  get_reject(table_main_alt,  "_power"),
+  get_reject(table_main_null, "_t1e"),
+  by = group_vars
+)
+```
+
+# Simulation parameters and integrity checks
+
+```{r params}
+tibble::tibble(
+  Parameter = c("Iterations per scenario", "Trial sample size", "Landmark time \u03c4 (months)",
+                "Matching ratio (1:k)", "Significance level \u03b1 (one-sided)"),
+  Value     = c(N_BOOT, N_TRIAL, TAU, RATIO_CONTROLS, ALPHA)
+) |>
+  flextable() |>
+  autofit()
+```
+
+Iterations that crashed (excluded from all summaries): **`r nrow(res_boot_errors)`**.
+
+```{r integrity}
+# Cells with fewer valid replicates than N_BOOT: degenerate matching
+# (non-estimability) is a reportable result, not a nuisance.
+table_main_alt |>
+  filter(n_valid < N_BOOT) |>
+  select(scenario, registry_n, method, n_valid, prop_failed) |>
+  relabel() |>
+  arrange(scenario, registry_n, method) |>
+  flextable() |>
+  autofit() |>
+  set_caption("Cells with fewer than N_BOOT valid replicates (alternative setting).")
+```
+
+# Table 3 — True estimands
+
+```{r table3}
+# theta_true = log S0*(scenario) / log S0*(S0): the oracle scenario S0 is the
+# unfiltered superpopulation, i.e. the population the registry represents.
+S0_oracle <- truth_scenarios$S0_true_tau[truth_scenarios$scenario == "S0"]
+
+truth_scenarios |>
+  transmute(
+    scenario, S0_true_tau, S1_true_tau, deltaS_true,
+    RMST0_true, RMST1_true, deltaRMST_true,
+    median_surv0_tau, median_surv1_tau,
+    theta_true = log(S0_true_tau) / log(S0_oracle),
+    delta_true = log(theta_true)
+  ) |>
+  mutate(across(where(is.numeric), \(x) round(x, 3))) |>
+  setNames(c("Scenario", "S\u2080(t)*", "S\u2081(t)*", "\u0394S(t)*",
+             "RMST\u2080*", "RMST\u2081*", "\u0394RMST*",
+             "Median\u2080", "Median\u2081", "\u03b8 true", "\u03b4 true")) |>
+  flextable() |>
+  autofit() |>
+  set_caption("Table 3. True estimands by scenario, computed on the latent event times of the scenario-specific trial pools.")
+```
+
+```{r effect-table-fun}
+# Table 4 (Delta S) and Table A5 (Delta RMST) share the same layout.
+make_effect_table <- function(df, e = c("deltaS", "deltaRMST"), caption) {
+  e      <- match.arg(e)
+  k      <- if (e == "deltaS") "S" else "RMST"
+  d_mcse <- if (e == "deltaS") 4 else 3
+  sym    <- if (e == "deltaS") "\u0394S(t)" else "\u0394RMST"
+  col    <- \(...) df[[paste0(...)]]
+
+  tab <- tibble::tibble(
+    scenario     = df$scenario,
+    registry_n   = df$registry_n,
+    method       = recode(df$method, !!!METHOD_LABELS),
+    n_sim        = df$n_valid,
+    true         = col("true_", e),
+    naive        = col("mean_", e, "_registry"),
+    bias_naive   = fmt_est_mcse(col("total_bias_", e, "_naive"),   col("bias_", e, "_registry_mcse"), 3, d_mcse),
+    rmse_naive   = fmt_est_mcse(col("rmse_", e, "_registry"),       col("rmse_", e, "_registry_mcse"), 3, d_mcse),
+    se           = -col("registry_selection_error_", k),
+    matched      = col("mean_", e, "_matched"),
+    bias_matched = fmt_est_mcse(col("total_bias_", e, "_matched"), col("bias_", e, "_matched_mcse"),  3, d_mcse),
+    rmse_matched = fmt_est_mcse(col("rmse_", e, "_matched"),       col("rmse_", e, "_matched_mcse"),  3, d_mcse),
+    me           = -col("matching_error_", k)
+  ) |>
+    relabel() |>
+    arrange(scenario, registry_n, method) |>
+    mutate(across(c(true, naive, se, matched, me), \(x) formatC(x, format = "f", digits = 3)))
+
+  names(tab) <- c("Sc", "N", "M", "N (sim)", paste0(sym, "*"),
+                  paste(sym, "Naive"), "Total bias Naive", paste0("RMSE (", sym, ") Naive"),
+                  "Registry selection error (SE)",
+                  paste(sym, "Matched"), "Total bias Matched", paste0("RMSE (", sym, ") Matched"),
+                  "Matching error (ME)")
+
+  tab |> flextable() |> autofit() |> set_caption(caption)
+}
+```
+
+# Table 4 — Estimated effect and bias, ΔS(12)
+
+```{r table4}
+make_effect_table(
+  table_main_alt, "deltaS",
+  "Table 4. Estimated survival treatment effect and bias at t = 12 months, naive and matched benchmarks. MCSE in parentheses. SE and ME shown as contribution to bias."
+)
+```
+
+# Table 5 — Operating characteristics
+
+```{r table5}
+to_block <- function(df) rename(df, scenario_block = scenario)
+build_table5(to_block(table_main_null), to_block(table_main_alt))
+```
+
+# Figure 1 — Benchmark error
+
+```{r fig1, fig.height = 5, fig.width = 12}
+bias_registry <- table_main_alt |>
+  distinct(scenario, registry_n, registry_selection_error_S) |>
+  transmute(scenario, registry_n, estimator = "Naive registry",
+            bias = -registry_selection_error_S)
+
+bias_matched <- table_main_alt |>
+  transmute(scenario, registry_n,
+            estimator = recode(method, prop = "Propensity matched", prog = "Prognostic matched"),
+            bias = -matching_error_S)
+
+bind_rows(bias_registry, bias_matched) |>
+  relabel() |>
+  mutate(estimator = factor(estimator,
+                            levels = c("Propensity matched", "Prognostic matched", "Naive registry"))) |>
+  ggplot(aes(x = registry_n, y = bias, fill = estimator)) +
+  geom_col(position = position_dodge(width = 0.80), width = 0.70) +
+  geom_hline(yintercept = 0, linewidth = 0.3) +
+  facet_wrap(~ scenario, nrow = 1) +
+  scale_fill_manual(values = c("Propensity matched" = "#E69F00",
+                               "Prognostic matched" = "#56B4E9",
+                               "Naive registry"     = "#666666")) +
+  labs(x = "Registry size (N)",
+       y = "Benchmark error, contribution to bias in \u0394S(12)",
+       fill = "") +
+  theme_minimal(base_size = 11) +
+  theme(axis.text.x      = element_text(angle = 45, hjust = 1),
+        legend.position  = "bottom",
+        panel.grid.minor = element_blank(),
+        strip.text.x     = element_text(face = "bold", size = 9))
+```
+
+# Figure 2 — Operating characteristics
+
+```{r fig2, fig.height = 8, fig.width = 12}
+plot_lr <- table_oc |>
+  pivot_longer(cols = c(ends_with("_power"), ends_with("_t1e")),
+               names_to = "estimand", values_to = "value") |>
+  mutate(
+    metric    = if_else(str_ends(estimand, "_power"), "Power", "Type I error"),
+    test_raw  = str_remove(estimand, "_(power|t1e)$") |> str_remove("^reject_"),
+    test_type = case_when(str_detect(test_raw, "one_sample") ~ "One-sample LR",
+                          str_detect(test_raw, "two_sample") ~ "Two-sample LR"),
+    benchmark = case_when(
+      # NB: "two_sample_naive" does not match "registry" -> dropped below,
+      # as in the original figure (only the one-sample registry curve is shown)
+      str_detect(test_raw, "registry")                      ~ "Registry",
+      str_detect(test_raw, "matched") & method == "prop"    ~ "Propensity matched",
+      str_detect(test_raw, "matched") & method == "prog"    ~ "Prognostic matched"
+    ),
+    curve  = paste(benchmark, test_type, sep = ": "),
+    metric = factor(metric, levels = c("Type I error", "Power"))
+  ) |>
+  filter(!is.na(benchmark), !is.na(test_type)) |>
+  # registry curves do not depend on the matching method: keep one copy
+  distinct(scenario, registry_n, metric, curve, .keep_all = TRUE) |>
+  relabel()
+
+ref_lines <- tibble::tibble(
+  metric = factor(c("Type I error", "Power"), levels = c("Type I error", "Power")),
+  yref   = c(ALPHA, 0.80),
+  lty    = c("dashed", "dotted")
+)
+
+ggplot(plot_lr, aes(x = registry_n, y = value, group = curve,
+                    colour = benchmark, linetype = test_type)) +
+  geom_line(linewidth = 0.9) +
+  geom_point(size = 2) +
+    geom_hline(data = tibble::tibble(metric = factor("Type I error", levels = c("Type I error", "Power")),
+                                   yref = ALPHA),
+             aes(yintercept = yref), linetype = "dashed", inherit.aes = FALSE) +
+  geom_hline(data = tibble::tibble(metric = factor("Power", levels = c("Type I error", "Power")),
+                                   yref = 0.80),
+             aes(yintercept = yref), linetype = "dotted", inherit.aes = FALSE) +
+  facet_grid(metric ~ scenario) +
+  scale_colour_manual(values = c("Registry"           = "#666666",
+                                 "Prognostic matched" = "#56B4E9",
+                                 "Propensity matched" = "#E69F00")) +
+  scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, by = 0.1)) +
+  labs(x = "Registry size (N)", y = "Probability", colour = "", linetype = "",
+       caption = paste0("Dashed line: nominal type I error (\u03b1 = ", ALPHA, "). ",
+                        "Dotted line: target power (0.80).")) +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "bottom",
+        strip.text      = element_text(face = "bold"),
+        axis.text.x     = element_text(angle = 45, hjust = 1))
+```
+
+# Supplementary tables
+
+## Table A3 — Balance after matching
+
+```{r tableA3}
+table_balance |>
+  relabel() |>
+  arrange(scenario, registry_n, method) |>
+  select(Scenario = scenario, N = registry_n, Method = method,
+         `SMD score unmatched`, `SMD score matched`, `Mean covariate SMD matched`,
+         `% covariates SMD > 0.10`, `% covariates SMD > 0.20`,
+         `ESS matched controls`, `Controls discarded (n)`) |>
+  flextable() |>
+  autofit() |>
+  set_caption("Table A3. Covariate and score balance after matching: mean (Q1, Q3); SD over replicates.")
+```
+
+## Table A4 — Bias decomposition, ΔS(12), matched benchmark
+
+```{r tableA4}
+build_table4(table_main_alt, scale = "deltaS", bench = "matched") |>
+  set_caption("Table A4. Decomposition of the bias in the estimated 12-month survival difference, matched benchmark.")
+```
+
+## Table A5 — Estimated effect and bias, ΔRMST(12)
+
+```{r tableA5}
+make_effect_table(
+  table_main_alt, "deltaRMST",
+  "Table A5. Estimated RMST treatment effect (t = 12 months, in months) and bias, naive and matched benchmarks. MCSE in parentheses."
+)
+```
+
+# Session info
+
+```{r session}
+sessionInfo()
+```
