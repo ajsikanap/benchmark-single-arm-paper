@@ -37,7 +37,7 @@ source(here::here("config/parameters.R"))
 
 
 # ── Global parameters ─────────────────────────────────────────────────────────
-N_BOOT         <- 100
+N_BOOT         <- 10
 N_REGISTRY     <- N_REG_VALUES
 
 scenario1 <- readxl::read_excel(here::here("config/simulation_structure.xlsx"), sheet = "S1")

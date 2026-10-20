@@ -161,6 +161,7 @@ trial_pool_scenarios <- list(S0 = S0, S1 = S1, S2 = S2, S3A = S3A, S3B = S3B, S4
 # (Cox model on the registry) and for a propensity score (logistic model for
 # trial membership).
 # -----------------------------------------------------------------------------
+source("functions/compute_truth_latent.R")
 truth_scenarios <- purrr::imap_dfr(
   trial_pool_scenarios,
   \(pool, name) compute_truth_superpop(

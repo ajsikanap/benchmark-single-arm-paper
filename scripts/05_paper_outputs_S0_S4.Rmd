@@ -20,7 +20,7 @@ library(here)
 # Raw per-iteration results from 04_run_simulation.R:
 #   res_boot_alt, res_boot_null, res_boot_errors, truth_scenarios,
 #   scenario_configs, N_BOOT, N_TRIAL, TAU, RATIO_CONTROLS, N_REGISTRY, ALPHA
-load(here("results/results_raw_100.RData"))
+load(here("results/results_raw_10.RData"))
 source(here("functions/load_functions.R"))
 
 group_vars <- c("scenario", "analysis_label", "registry_n", "method")

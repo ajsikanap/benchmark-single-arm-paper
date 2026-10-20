@@ -34,7 +34,7 @@ library(stringr)
 
 source(here::here("functions/load_functions.R"))
 
-load(here::here("results/results_sensitivity_betaB_rho_TS_registry250_20.rData"))
+load(here::here("results/results_sensitivity_betaB_rho_TS_registry250_10.rData"))
 ```
 
 
