@@ -125,8 +125,6 @@ S3B <- trial_pool_generated |>
   slice_sample(n = N_TRIAL_POOL, replace = FALSE)
 
 
-trial_pool_scenarios <- list(S0 = S0, S1 = S1, S2 = S2, S3A = S3A, S3B = S3B, S4 = S4)
-
 
 
 # -----------------------------------------------------------------------------
@@ -150,6 +148,8 @@ S4 <- trial_pool_s4 |>
   filter(B == 1) |>
   slice_sample(n = N_TRIAL_POOL, replace = FALSE)
 
+
+trial_pool_scenarios <- list(S0 = S0, S1 = S1, S2 = S2, S3A = S3A, S3B = S3B, S4 = S4)
 
 
 # -----------------------------------------------------------------------------

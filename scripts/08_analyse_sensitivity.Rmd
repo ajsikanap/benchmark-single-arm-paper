@@ -1,0 +1,475 @@
+---
+title: 'S5 — Sensitivity analysis (beta_B x rho_B_TS): analysis and outputs'
+author: "Ajsi Kanapari"
+date: "`r Sys.Date()`"
+output:
+  word_document:
+    toc: true
+    toc_depth: '3'
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    theme: readable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 8,
+  fig.height = 5
+)
+```
+
+```{r libraries, echo=TRUE}
+library(here)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(ggplot2)
+library(flextable)
+library(stringr)
+
+source(here::here("functions/load_functions.R"))
+
+load(here::here("results/results_sensitivity_betaB_rho_TS_registry250_20.rData"))
+```
+
+
+```{r split-null-alt, echo=FALSE}
+res_alt_list <- purrr::map(
+  results_list_sensitivity,
+  ~ dplyr::filter(.x, effect_setting == "alternative")
+)
+
+res_null_list <- purrr::map(
+  results_list_sensitivity,
+  ~ dplyr::filter(.x, effect_setting == "null")
+)
+
+scenario_lookup <- sensitivity_pools |>
+  dplyr::select(scenario_id, beta_B, rho_B_TS)
+```
+
+```{r main-results-sens, echo=FALSE}
+main_results_sens <- purrr::imap_dfr(
+  res_alt_list,
+  ~ summarise_main_results(.x, group_vars = c("method")) |>
+    dplyr::mutate(scenario_id = .y, .before = 1)
+) |>
+  dplyr::left_join(scenario_lookup, by = "scenario_id")
+```
+
+```{r bias-decomposition-sens, echo=FALSE}
+
+bias_decomposition_sens <- main_results_sens |>
+  dplyr::transmute(
+    scenario_id, beta_B, rho_B_TS, method, n_valid,
+
+    # ── DeltaS — matched ────────────────────────────────────────────────────
+    mean_deltaS_matched_obs, true_deltaS,
+    total_bias_deltaS_matched,
+    trial_est_error_S,
+    matched_control_est_error_S,
+    matching_error_S,
+    sampling_error_deltaS,
+    reconstructed_bias_deltaS_matched,
+    check_deltaS_matched =
+      total_bias_deltaS_matched - reconstructed_bias_deltaS_matched,
+
+    # ── DeltaS — naive (full registry) ──────────────────────────────────────
+    mean_deltaS_naive_obs,
+    total_bias_deltaS_naive,
+    registry_est_error_S,
+    registry_selection_error_S,
+    reconstructed_bias_deltaS_naive,
+    check_deltaS_naive =
+      total_bias_deltaS_naive - reconstructed_bias_deltaS_naive,
+
+    # ── DeltaRMST — matched ─────────────────────────────────────────────────
+    mean_deltaRMST_matched_obs, true_deltaRMST,
+    total_bias_deltaRMST_matched,
+    trial_est_error_RMST,
+    matched_control_est_error_RMST,
+    matching_error_RMST,
+    sampling_error_deltaRMST,
+    reconstructed_bias_deltaRMST_matched,
+    check_deltaRMST_matched =
+      total_bias_deltaRMST_matched - reconstructed_bias_deltaRMST_matched,
+
+    # ── DeltaRMST — naive ───────────────────────────────────────────────────
+    mean_deltaRMST_naive_obs,
+    total_bias_deltaRMST_naive,
+    registry_est_error_RMST,
+    registry_selection_error_RMST,
+    reconstructed_bias_deltaRMST_naive,
+    check_deltaRMST_naive =
+      total_bias_deltaRMST_naive - reconstructed_bias_deltaRMST_naive
+  )
+
+# Sanity check: the decomposition residuals must be negligible.
+# (If they are not, it is a bug in the decomposition, not an artefact of the grid.)
+max_check <- bias_decomposition_sens |>
+  dplyr::summarise(dplyr::across(dplyr::starts_with("check_"),
+                                 ~ max(abs(.x), na.rm = TRUE)))
+```
+
+```{r matching-error-sens, echo=FALSE}
+matching_error_sens <- purrr::imap_dfr(
+  res_alt_list,
+  ~ summarise_matching_error(.x, group_vars = c("method")) |>
+    dplyr::mutate(scenario_id = .y, .before = 1)
+) |>
+  dplyr::left_join(scenario_lookup, by = "scenario_id")
+```
+
+```{r endpoint-components-sens, echo=FALSE}
+
+endpoint_components_sens <- purrr::imap_dfr(
+  res_alt_list,
+  ~ summarise_endpoint_components2(.x, group_vars = c("method"), formatted = FALSE) |>
+    dplyr::mutate(scenario_id = .y, .before = 1)
+) |>
+  dplyr::left_join(scenario_lookup, by = "scenario_id")
+```
+
+```{r balance-sens, echo=FALSE}
+
+balance_sens <- purrr::imap_dfr(
+  res_alt_list,
+  ~ summarise_balance_results(.x, group_vars = c("registry_n", "method")) |>
+    dplyr::mutate(scenario_id = .y, .before = 1)
+) |>
+  dplyr::left_join(scenario_lookup, by = "scenario_id")
+```
+
+## Balance — preview
+
+Balance diagnostics on the observed covariates across cells (`beta_B`,
+`rho_B_TS`) at fixed `registry_n` = 250. Since B does not enter the score,
+balance on the observed covariates is expected to be essentially stable across
+the grid: any marked variation deserves inspection.
+
+```{r balance-table, echo=FALSE}
+balance_sens |>
+  dplyr::select(beta_B, rho_B_TS, method, dplyr::everything(),
+                -scenario_id, -registry_n) |>
+  dplyr::arrange(method, beta_B, rho_B_TS) |>
+  flextable::flextable() |>
+  flextable::autofit()
+```
+
+## Bias decomposition — preview (DeltaS)
+
+Sign convention "B" (as in Table 4 of the paper): contributions are displayed
+already oriented so that they add up directly to the total bias. Telescoping
+identity:
+
+- matched: `Total = Trial est.err (-) Control est.err (-) Matching err (+) Sampling err`
+- naive:  `Total = Trial est.err (-) Registry est.err (-) Selection err (+) Sampling err`
+
+`Check` = `Total - reconstructed`; must be ~0.
+
+```{r bias-decomposition-table-matched}
+bias_decomposition_sens |>
+  dplyr::transmute(
+    beta_B, rho_B_TS, method,
+    `Trial est. error`    = trial_est_error_S,
+    `-Control est. error` = -matched_control_est_error_S,
+    `-Matching error`     = -matching_error_S,
+    `Sampling error`      = sampling_error_deltaS,
+    `Total bias`          = total_bias_deltaS_matched,
+    `Check`               = check_deltaS_matched
+  ) |>
+  dplyr::arrange(method, beta_B, rho_B_TS) |>
+  flextable::flextable() |>
+  flextable::colformat_double(digits = 3) |>
+  flextable::set_caption("Bias decomposition on \u0394S — matched benchmark.") |>
+  flextable::autofit()
+```
+
+```{r bias-decomposition-table-naive}
+bias_decomposition_sens |>
+  dplyr::transmute(
+    beta_B, rho_B_TS, method,
+    `Trial est. error`     = trial_est_error_S,
+    `-Registry est. error` = -registry_est_error_S,
+    `-Selection error`     = -registry_selection_error_S,
+    `Sampling error`       = sampling_error_deltaS,
+    `Total bias`           = total_bias_deltaS_naive,
+    `Check`                = check_deltaS_naive
+  ) |>
+  dplyr::arrange(method, beta_B, rho_B_TS) |>
+  flextable::flextable() |>
+  flextable::colformat_double(digits = 3) |>
+  flextable::set_caption("Bias decomposition on \u0394S — naive (registry) benchmark.") |>
+  flextable::autofit()
+```
+
+## Matching error — preview
+
+```{r matching-error-table, echo=FALSE}
+matching_error_sens |>
+  dplyr::select(beta_B, rho_B_TS, method, dplyr::everything(), -scenario_id) |>
+  dplyr::arrange(method, beta_B, rho_B_TS) |>
+  flextable::flextable() |>
+  flextable::colformat_double(digits = 3) |>
+  flextable::autofit()
+```
+
+
+```{r echo=FALSE}
+matching_error_sens |>
+  dplyr::transmute(
+    beta_B, rho_B_TS, method,
+    `-Matching error`     = -mean_err_S_matched_vs_trialcf,
+    `RMSE S(12) matched`      = rmse_err_S_matched_vs_trialcf,
+    `-Selection error`     = -mean_err_S_registry_vs_trialcf,
+    `RMSE S(12) registry`               = rmse_err_S_registry_vs_trialcf
+  ) |>
+  dplyr::arrange(method, beta_B, rho_B_TS) |>
+  flextable::flextable() |>
+  flextable::colformat_double(digits = 3) |>
+  flextable::set_caption("Table Supplementary A%.") |>
+  flextable::autofit()
+```
+
+
+
+# Operating characteristics: Type I error and power
+
+`summarise_decision_performance` (already used for S0-S4) computes the Type I
+error from the `null` branch and the power from the `alternative` branch,
+separately by method.
+
+```{r decision-sens, echo=FALSE}
+decision_sens <- purrr::map2_dfr(
+  res_null_list,
+  res_alt_list,
+  ~ summarise_decision_performance(
+      res_null         = .x,
+      res_alt          = .y,
+      alpha            = 0.10,
+      scenario_label   = NULL,
+      registry_n_label = "250"
+    ),
+  .id = "scenario_id"
+) |>
+  dplyr::left_join(scenario_lookup, by = "scenario_id")
+```
+
+```{r decision-sens-long, echo=FALSE}
+decision_sens_long <- decision_sens |>
+  dplyr::select(
+    registry_n,
+    scenario_id,
+    beta_B,
+    rho_B_TS,
+    method,
+    dplyr::starts_with("typeI_"),
+    dplyr::starts_with("power_")
+  ) |>
+  tidyr::pivot_longer(
+    cols = dplyr::starts_with("typeI_") | dplyr::starts_with("power_"),
+    names_to = "decision_rule",
+    values_to = "value"
+  ) |>
+  dplyr::mutate(
+    stat = ifelse(stringr::str_ends(decision_rule, "_mcse"), "mcse", "reject_prob"),
+    decision_rule = stringr::str_remove(decision_rule, "_mcse$")
+  ) |>
+  tidyr::pivot_wider(names_from = stat, values_from = value) |>
+  dplyr::mutate(
+    metric = dplyr::case_when(
+      stringr::str_starts(decision_rule, "typeI_") ~ "Type I error",
+      stringr::str_starts(decision_rule, "power_") ~ "Power",
+      TRUE ~ NA_character_
+    ),
+    test = dplyr::case_when(
+      stringr::str_detect(decision_rule, "one_sample_lr") ~ "One-sample log-rank",
+      stringr::str_detect(decision_rule, "two_sample_lr") ~ "Two-sample log-rank",
+      TRUE ~ NA_character_
+    ),
+    benchmark = dplyr::case_when(
+      stringr::str_detect(decision_rule, "registry") ~ "Registry benchmark",
+      stringr::str_detect(decision_rule, "matched")  ~ "Matched benchmark",
+      TRUE ~ NA_character_
+    )
+  ) |>
+  dplyr::select(
+    registry_n, scenario_id, beta_B, rho_B_TS, method,
+    metric, test, benchmark, reject_prob, mcse
+  ) |>
+  dplyr::arrange(beta_B, rho_B_TS, metric, test, benchmark, method)
+```
+
+## Summary table (one-sample log-rank)
+
+```{r decision-table-one-sample, echo=FALSE}
+benchmark_cols <- decision_sens |>
+  dplyr::select(
+    scenario_id, beta_B, rho_B_TS, method,
+    benchmark_registry       = mean_registry_est,
+    benchmark_matched        = mean_matched_est,
+    benchmark_counterfactual = mean_trial_z0_est,
+    survival_treated         = mean_trial_z1_est,
+    deltaS_registry          = mean_deltaS_registry,
+    deltaS_matched           = mean_deltaS_matched,
+    deltaS_counterfactual    = mean_deltaS_oracle
+  ) |>
+  dplyr::distinct()
+
+decision_table_one_sample_wide <- decision_sens_long |>
+  dplyr::filter(test == "One-sample log-rank") |>
+  dplyr::mutate(
+    colname = dplyr::case_when(
+      metric == "Type I error" & benchmark == "Registry benchmark" ~ "typeI_registry",
+      metric == "Type I error" & benchmark == "Matched benchmark"  ~ "typeI_matched",
+      metric == "Power"        & benchmark == "Registry benchmark" ~ "power_registry",
+      metric == "Power"        & benchmark == "Matched benchmark"  ~ "power_matched"
+    ),
+    value = sprintf("%.3f (%.4f)", reject_prob, mcse)
+  ) |>
+  dplyr::filter(!is.na(colname)) |>
+  dplyr::select(scenario_id, beta_B, rho_B_TS, method, colname, value) |>
+  tidyr::pivot_wider(names_from = colname, values_from = value) |>
+  dplyr::left_join(
+    benchmark_cols,
+    by = c("scenario_id", "beta_B", "rho_B_TS", "method")
+  ) |>
+  dplyr::select(
+    beta_B, rho_B_TS, method,
+    benchmark_counterfactual, benchmark_registry, benchmark_matched, survival_treated,
+    deltaS_counterfactual, deltaS_registry, deltaS_matched,
+    typeI_registry, typeI_matched, power_registry, power_matched
+  ) |>
+  dplyr::arrange(beta_B, rho_B_TS, method)
+```
+
+```{r decision-table-flextable, echo=FALSE}
+decision_table_one_sample_wide |>
+  flextable::flextable() |>
+  flextable::colformat_double(digits = 3) |>
+  flextable::set_header_labels(
+    beta_B = "\u03b2B",
+    rho_B_TS = "\u03c1(B, tumour size)",
+    method = "Method",
+    benchmark_counterfactual = "S0 target",
+    benchmark_registry = "S0 registry",
+    benchmark_matched = "S0 matched",
+    survival_treated = "S1 treated",
+    deltaS_counterfactual = "\u0394S target",
+    deltaS_registry = "\u0394S registry",
+    deltaS_matched = "\u0394S matched",
+    typeI_registry = "Type I: registry",
+    typeI_matched = "Type I: matched",
+    power_registry = "Power: registry",
+    power_matched = "Power: matched"
+  ) |>
+  flextable::autofit()
+```
+
+
+```{r plot-data, echo=FALSE}
+plot_dat_compare <- decision_sens |>
+  dplyr::select(
+    beta_B, rho_B_TS, method,
+    power_one_sample_lr_registry_1s,
+    power_one_sample_lr_matched_1s,
+    typeI_one_sample_lr_registry_1s,
+    typeI_one_sample_lr_matched_1s
+  ) |>
+  tidyr::pivot_longer(
+    cols = -c(beta_B, rho_B_TS, method),
+    names_to = "measure",
+    values_to = "value"
+  ) |>
+  dplyr::mutate(
+    metric = dplyr::case_when(
+      stringr::str_starts(measure, "power") ~ "Power",
+      stringr::str_starts(measure, "typeI") ~ "Type I error"
+    ),
+    benchmark = dplyr::case_when(
+      stringr::str_detect(measure, "registry") ~ "Registry",
+      stringr::str_detect(measure, "matched")  ~ "Matched"
+    )
+  )
+```
+
+
+
+# Profiles at fixed beta_B
+
+```{r line-plot-function, echo=FALSE}
+make_line_plot <- function(dat, beta_B_value) {
+  ggplot(
+    dat |> dplyr::filter(beta_B == beta_B_value),
+    aes(
+      x = rho_B_TS,
+      y = value,
+      color = benchmark,
+      linetype = metric,
+      group = interaction(benchmark, metric)
+    )
+  ) +
+    geom_hline(
+      data = data.frame(metric = "Type I error", yint = 0.10),
+      aes(yintercept = yint),
+      linetype = "dashed",
+      inherit.aes = FALSE
+    ) +
+    geom_hline(
+      data = data.frame(metric = "Power", yint = 0.80),
+      aes(yintercept = yint),
+      linetype = "dashed",
+      inherit.aes = FALSE
+    ) +
+    geom_line(linewidth = 1) +
+    geom_point(size = 2) +
+    facet_wrap(~ method) +
+    labs(
+      x = expression(rho[B,TS]),
+      y = "Probability",
+      color = "Benchmark",
+      linetype = "Metric",
+      title = bquote(paste("Power and Type I error for ", beta[B], " = ", .(beta_B_value))),
+      subtitle = "One-sided one-sample log-rank test"
+    ) +
+    theme_minimal()
+}
+```
+
+## beta_B = -1
+
+```{r line-plot-bneg1}
+make_line_plot(plot_dat_compare, -1)
+```
+
+## beta_B = 0
+
+```{r line-plot-b0}
+make_line_plot(plot_dat_compare, 0)
+```
+
+## beta_B = 1
+
+```{r line-plot-b1}
+make_line_plot(plot_dat_compare, 1)
+```
+
+# Saving
+
+```{r save-analysis}
+save(
+  main_results_sens,
+  bias_decomposition_sens,
+  matching_error_sens,
+  endpoint_components_sens,
+  balance_sens,
+  decision_sens,
+  decision_table_one_sample_wide,
+  file = here::here(paste0("data/sensitivity_analysis_summary_", Sys.Date(), ".rda"))
+)
+```

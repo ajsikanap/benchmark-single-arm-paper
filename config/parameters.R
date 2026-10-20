@@ -64,7 +64,7 @@ C_low          <- 0
 
 
 # -- Monte Carlo --------------------------------------------------------------
-N_BOOT <- 10000            # set to 50 for verification runs
+N_BOOT <- 20            # set to 50 for verification runs
 
 
 # -- Sensitivity analysis grid ------------------------------------------------
